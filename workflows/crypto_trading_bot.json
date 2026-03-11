@@ -1,0 +1,613 @@
+{
+  "name": "Crypto Trading Bot — Bybit Demo v1",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "node-schedule",
+      "name": "Schedule: Every 5 Min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 400]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "cfg-symbol",   "name": "symbol",        "value": "BTCUSDT",  "type": "string" },
+            { "id": "cfg-interval", "name": "klineInterval", "value": "5",        "type": "string" },
+            { "id": "cfg-limit",    "name": "klineLimit",    "value": "200",      "type": "string" },
+            { "id": "cfg-base",     "name": "bybitBase",     "value": "https://api-demo.bybit.com", "type": "string" },
+            { "id": "cfg-live",     "name": "liveTrading",   "value": "={{ $env.LIVE_TRADING_ENABLED === 'true' }}", "type": "boolean" },
+            { "id": "cfg-risk",     "name": "maxRiskPct",    "value": "={{ $env.MAX_RISK_PER_TRADE_PCT || '0.005' }}", "type": "string" },
+            { "id": "cfg-minconf",  "name": "minConfidence", "value": "={{ $env.MIN_CONFIDENCE || '0.60' }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-config",
+      "name": "Init Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Bybit V5 HMAC-SHA256 signature (GET) ──────────────────────\nconst crypto = require('crypto');\nconst symbol       = $input.first().json.symbol;\nconst interval     = $input.first().json.klineInterval;\nconst limit        = $input.first().json.klineLimit;\nconst apiKey       = $env.BYBIT_API_KEY;\nconst apiSecret    = $env.BYBIT_API_SECRET;\nconst timestamp    = Date.now().toString();\nconst recvWindow   = '5000';\nconst queryString  = `symbol=${symbol}&interval=${interval}&limit=${limit}`;\nconst paramStr     = timestamp + apiKey + recvWindow + queryString;\nconst signature    = crypto.createHmac('sha256', apiSecret).update(paramStr).digest('hex');\n\nreturn [{\n  json: {\n    ...($input.first().json),\n    kline: { apiKey, timestamp, recvWindow, signature, queryString }\n  }\n}];\n"
+      },
+      "id": "node-sign-kline",
+      "name": "Sign: Kline Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 280]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.bybitBase }}/v5/market/kline?{{ $json.kline.queryString }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-BAPI-API-KEY",    "value": "={{ $json.kline.apiKey }}" },
+            { "name": "X-BAPI-TIMESTAMP",  "value": "={{ $json.kline.timestamp }}" },
+            { "name": "X-BAPI-SIGN",       "value": "={{ $json.kline.signature }}" },
+            { "name": "X-BAPI-RECV-WINDOW","value": "={{ $json.kline.recvWindow }}" }
+          ]
+        },
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "node-fetch-kline",
+      "name": "Bybit: Fetch Klines",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 280]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Sign Bybit orderbook GET request ──────────────────────────\nconst crypto = require('crypto');\nconst prev         = $('Init Config').first().json;\nconst symbol       = prev.symbol;\nconst apiKey       = $env.BYBIT_API_KEY;\nconst apiSecret    = $env.BYBIT_API_SECRET;\nconst timestamp    = Date.now().toString();\nconst recvWindow   = '5000';\nconst queryString  = `symbol=${symbol}&limit=25`;\nconst paramStr     = timestamp + apiKey + recvWindow + queryString;\nconst signature    = crypto.createHmac('sha256', apiSecret).update(paramStr).digest('hex');\n\nreturn [{\n  json: { symbol, apiKey, timestamp, recvWindow, signature, queryString, bybitBase: prev.bybitBase }\n}];\n"
+      },
+      "id": "node-sign-ob",
+      "name": "Sign: Orderbook Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 520]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.bybitBase }}/v5/market/orderbook?{{ $json.queryString }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-BAPI-API-KEY",    "value": "={{ $json.apiKey }}" },
+            { "name": "X-BAPI-TIMESTAMP",  "value": "={{ $json.timestamp }}" },
+            { "name": "X-BAPI-SIGN",       "value": "={{ $json.signature }}" },
+            { "name": "X-BAPI-RECV-WINDOW","value": "={{ $json.recvWindow }}" }
+          ]
+        },
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "node-fetch-ob",
+      "name": "Bybit: Fetch OrderBook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 520]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "multiplex",
+        "options": {}
+      },
+      "id": "node-merge-market",
+      "name": "Merge: Market Data",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1120, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Compute RSI-14, EMA-20/50/200, MACD-12/26/9 ──────────────\nconst klineRaw = $('Bybit: Fetch Klines').first().json;\nconst obRaw    = $('Bybit: Fetch OrderBook').first().json;\nconst config   = $('Init Config').first().json;\n\n// Bybit kline format: [startTime, open, high, low, close, volume, turnover]\n// API returns newest-first → reverse for chronological order\nconst rawList = klineRaw.result?.list || [];\nconst ohlcv = rawList.map(c => ({\n  time:   parseInt(c[0]),\n  open:   parseFloat(c[1]),\n  high:   parseFloat(c[2]),\n  low:    parseFloat(c[3]),\n  close:  parseFloat(c[4]),\n  volume: parseFloat(c[5])\n})).reverse();\n\nif (ohlcv.length < 30) {\n  throw new Error(`Insufficient kline data: ${ohlcv.length} candles`);\n}\n\nconst closes  = ohlcv.map(c => c.close);\nconst highs   = ohlcv.map(c => c.high);\nconst lows    = ohlcv.map(c => c.low);\nconst volumes = ohlcv.map(c => c.volume);\n\n// ── EMA ────────────────────────────────────────────────────────\nfunction ema(prices, period) {\n  if (prices.length < period) return null;\n  const k = 2 / (period + 1);\n  let val = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;\n  for (let i = period; i < prices.length; i++) {\n    val = prices[i] * k + val * (1 - k);\n  }\n  return Math.round(val * 100) / 100;\n}\n\n// ── RSI ────────────────────────────────────────────────────────\nfunction rsi(prices, period = 14) {\n  if (prices.length < period + 1) return null;\n  let gains = 0, losses = 0;\n  for (let i = 1; i <= period; i++) {\n    const d = prices[i] - prices[i - 1];\n    if (d > 0) gains += d; else losses -= d;\n  }\n  let ag = gains / period, al = losses / period;\n  for (let i = period + 1; i < prices.length; i++) {\n    const d = prices[i] - prices[i - 1];\n    ag = (ag * (period - 1) + Math.max(0, d)) / period;\n    al = (al * (period - 1) + Math.max(0, -d)) / period;\n  }\n  if (al === 0) return 100;\n  return Math.round((100 - 100 / (1 + ag / al)) * 100) / 100;\n}\n\n// ── MACD ───────────────────────────────────────────────────────\nfunction macdFull(prices) {\n  if (prices.length < 35) return null;\n  // Build MACD line history to compute signal line\n  const k12 = 2 / (12 + 1), k26 = 2 / (26 + 1), k9 = 2 / (9 + 1);\n  let e12 = prices.slice(0, 12).reduce((a, b) => a + b, 0) / 12;\n  let e26 = prices.slice(0, 26).reduce((a, b) => a + b, 0) / 26;\n  const macdLine = [];\n  for (let i = 12; i < prices.length; i++) {\n    e12 = prices[i] * k12 + e12 * (1 - k12);\n    if (i >= 25) {\n      e26 = prices[i] * k26 + e26 * (1 - k26);\n      macdLine.push(e12 - e26);\n    }\n  }\n  if (macdLine.length < 9) return null;\n  let signal = macdLine.slice(0, 9).reduce((a, b) => a + b, 0) / 9;\n  for (let i = 9; i < macdLine.length; i++) {\n    signal = macdLine[i] * k9 + signal * (1 - k9);\n  }\n  const last = macdLine[macdLine.length - 1];\n  return {\n    macd:      Math.round(last * 100) / 100,\n    signal:    Math.round(signal * 100) / 100,\n    histogram: Math.round((last - signal) * 100) / 100\n  };\n}\n\n// ── Candlestick pattern detection ──────────────────────────────\nfunction detectPattern(ohlcv) {\n  const n = ohlcv.length;\n  const c = ohlcv[n - 1], p = ohlcv[n - 2], pp = ohlcv[n - 3];\n  const body    = c => Math.abs(c.close - c.open);\n  const isGreen = c => c.close > c.open;\n  const range   = c => c.high - c.low;\n\n  // Doji\n  if (body(c) / range(c) < 0.1) return 'DOJI';\n  // Hammer (bullish reversal)\n  if (isGreen(c) && (c.low < c.open) && (c.open - c.low) > 2 * body(c)) return 'HAMMER';\n  // Shooting star (bearish reversal)\n  if (!isGreen(c) && (c.high - c.open) > 2 * body(c)) return 'SHOOTING_STAR';\n  // Bullish engulfing\n  if (isGreen(c) && !isGreen(p) && c.open < p.close && c.close > p.open) return 'BULLISH_ENGULFING';\n  // Bearish engulfing\n  if (!isGreen(c) && isGreen(p) && c.open > p.close && c.close < p.open) return 'BEARISH_ENGULFING';\n  // Morning star\n  if (isGreen(c) && !isGreen(pp) && body(p) < body(pp) * 0.3 && c.close > (pp.open + pp.close) / 2) return 'MORNING_STAR';\n  // Evening star\n  if (!isGreen(c) && isGreen(pp) && body(p) < body(pp) * 0.3 && c.close < (pp.open + pp.close) / 2) return 'EVENING_STAR';\n  return 'NONE';\n}\n\n// ── Orderbook pressure ─────────────────────────────────────────\nconst ob = obRaw.result || {};\nconst bids = (ob.b || []).slice(0, 5).map(b => parseFloat(b[0]) * parseFloat(b[1]));\nconst asks = (ob.a || []).slice(0, 5).map(a => parseFloat(a[0]) * parseFloat(a[1]));\nconst bidVol = bids.reduce((a, b) => a + b, 0);\nconst askVol = asks.reduce((a, b) => a + b, 0);\nconst obPressure = bidVol / (bidVol + askVol); // > 0.5 = bullish\n\nconst last  = ohlcv[ohlcv.length - 1];\nconst prev  = ohlcv[ohlcv.length - 2];\nconst ema20 = ema(closes, 20);\nconst ema50 = ema(closes, 50);\nconst ema200 = ema(closes, 200);\nconst rsi14 = rsi(closes, 14);\nconst macdData = macdFull(closes);\nconst pattern = detectPattern(ohlcv);\nconst vol20avg = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;\nconst volRatio = last.volume / vol20avg;\n\nreturn [{\n  json: {\n    symbol:       config.symbol,\n    currentPrice: last.close,\n    prevClose:    prev.close,\n    priceChangePct: Math.round(((last.close - prev.close) / prev.close) * 10000) / 100,\n    rsi:          rsi14,\n    ema20,\n    ema50,\n    ema200,\n    macd:         macdData,\n    pattern,\n    obPressure:   Math.round(obPressure * 1000) / 1000,\n    volRatio:     Math.round(volRatio * 100) / 100,\n    trend:        last.close > ema200 ? 'UPTREND' : 'DOWNTREND',\n    ema_alignment: ema20 > ema50 && ema50 > ema200 ? 'BULLISH' : ema20 < ema50 && ema50 < ema200 ? 'BEARISH' : 'MIXED',\n    candleCount:  ohlcv.length,\n    liveTrading:  config.liveTrading,\n    minConfidence: parseFloat(config.minConfidence),\n    maxRiskPct:   parseFloat(config.maxRiskPct)\n  }\n}];\n"
+      },
+      "id": "node-compute-ta",
+      "name": "Compute: TA Indicators",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://cryptopanic.com/api/v1/posts/?auth_token={{ $env.CRYPTOPANIC_API_KEY }}&filter=important&currencies=BTC&kind=news&public=true",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "node-fetch-news",
+      "name": "CryptoPanic: Fetch News",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Parse CryptoPanic response ────────────────────────────────\nconst raw = $input.first().json;\nconst taData = $('Compute: TA Indicators').first().json;\n\nconst results = raw.results || [];\nconst news = results.slice(0, 8).map(n => ({\n  title:     n.title,\n  published: n.published_at,\n  source:    n.source?.title || 'Unknown',\n  domain:    n.source?.domain || '',\n  url:       n.url,\n  votes_positive: n.votes?.positive || 0,\n  votes_negative: n.votes?.negative || 0,\n  currencies: (n.currencies || []).map(c => c.code).join(', ')\n}));\n\nreturn [{\n  json: {\n    ...taData,\n    news,\n    newsCount: news.length,\n    newsFetchedAt: new Date().toISOString()\n  }\n}];\n"
+      },
+      "id": "node-parse-news",
+      "name": "Parse: News",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 600]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization",  "value": "=Bearer {{ $env.OPENROUTER_API_KEY }}" },
+            { "name": "Content-Type",   "value": "application/json" },
+            { "name": "HTTP-Referer",   "value": "https://github.com/thenrico/crypto-bot" },
+            { "name": "X-Title",        "value": "Crypto Trading Bot" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $env.NEWS_MODEL || 'openai/gpt-4o-mini' }}\",\n  \"temperature\": 0.1,\n  \"max_tokens\": 600,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a professional crypto news analyst. Analyze news headlines for market impact on the specified crypto symbol. Return ONLY valid JSON.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Analyze these {{ $json.newsCount }} news items for {{ $json.symbol }} at price ${{ $json.currentPrice }}:\\n\\n{{ $json.news.map((n, i) => `${i+1}. [${n.source}] ${n.title} (votes: +${n.votes_positive}/-${n.votes_negative})`).join('\\n') }}\\n\\nReturn JSON: { \\\"summary\\\": \\\"2-3 sentence market summary\\\", \\\"impact_score\\\": -10 to +10 integer where +10=extremely bullish, \\\"key_catalysts\\\": [\\\"string\\\", ...], \\\"sentiment\\\": \\\"BULLISH|BEARISH|NEUTRAL\\\", \\\"confidence\\\": 0.0-1.0 }\"\n    }\n  ]\n}",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "node-news-ai",
+      "name": "Agent 1: News AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Parse News AI response ────────────────────────────────────\nconst raw      = $input.first().json;\nconst taData   = $('Compute: TA Indicators').first().json;\nconst newsData = $('Parse: News').first().json;\n\nlet newsAnalysis = {};\ntry {\n  const content = raw.choices?.[0]?.message?.content || '{}';\n  newsAnalysis  = JSON.parse(content);\n} catch (e) {\n  newsAnalysis  = { summary: 'Parse error', impact_score: 0, sentiment: 'NEUTRAL', confidence: 0.3, key_catalysts: [] };\n}\n\nconst usage = raw.usage || {};\n\nreturn [{\n  json: {\n    ...taData,\n    news:          newsData.news,\n    newsCount:     newsData.newsCount,\n    newsAnalysis: {\n      summary:        newsAnalysis.summary       || 'No summary',\n      impactScore:    newsAnalysis.impact_score  || 0,\n      sentiment:      newsAnalysis.sentiment     || 'NEUTRAL',\n      confidence:     newsAnalysis.confidence    || 0.5,\n      keyCatalysts:   newsAnalysis.key_catalysts || []\n    },\n    newsAiTokens: { input: usage.prompt_tokens || 0, output: usage.completion_tokens || 0 }\n  }\n}];\n"
+      },
+      "id": "node-parse-news-ai",
+      "name": "Parse: News AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 600]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.OPENROUTER_API_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" },
+            { "name": "HTTP-Referer",  "value": "https://github.com/thenrico/crypto-bot" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $env.SENTIMENT_MODEL || 'meta-llama/llama-3.1-8b-instruct' }}\",\n  \"temperature\": 0.1,\n  \"max_tokens\": 400,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a crypto market sentiment analyst. Given news analysis and technical signals, produce a precise sentiment score. Return ONLY valid JSON.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Sentiment analysis for {{ $json.symbol }}:\\n\\nNews: {{ $json.newsAnalysis.summary }}\\nNews impact: {{ $json.newsAnalysis.impactScore }}/10\\nNews catalysts: {{ $json.newsAnalysis.keyCatalysts.join(', ') }}\\nRSI-14: {{ $json.rsi }}\\nTrend: {{ $json.trend }}\\nEMA alignment: {{ $json.ema_alignment }}\\nOrderbook pressure: {{ $json.obPressure }} (>0.5=bullish)\\nVolume ratio vs 20-avg: {{ $json.volRatio }}x\\nPattern: {{ $json.pattern }}\\nMACD histogram: {{ $json.macd?.histogram }}\\n\\nReturn JSON: { \\\"sentiment_score\\\": integer -100 to +100, \\\"label\\\": \\\"STRONG_BULL|BULL|NEUTRAL|BEAR|STRONG_BEAR\\\", \\\"reasoning\\\": \\\"one sentence\\\", \\\"fear_greed\\\": \\\"FEAR|GREED|NEUTRAL\\\", \\\"confidence\\\": 0.0-1.0 }\"\n    }\n  ]\n}",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "node-sentiment-ai",
+      "name": "Agent 2: Sentiment AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2220, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Parse Sentiment AI response ───────────────────────────────\nconst raw    = $input.first().json;\nconst prev   = $('Parse: News AI Response').first().json;\n\nlet sentiment = {};\ntry {\n  const content = raw.choices?.[0]?.message?.content || '{}';\n  sentiment     = JSON.parse(content);\n} catch (e) {\n  sentiment     = { sentiment_score: 0, label: 'NEUTRAL', reasoning: 'Parse error', confidence: 0.3 };\n}\n\nreturn [{\n  json: {\n    ...prev,\n    sentiment: {\n      score:      sentiment.sentiment_score || 0,\n      label:      sentiment.label           || 'NEUTRAL',\n      reasoning:  sentiment.reasoning       || '',\n      fearGreed:  sentiment.fear_greed      || 'NEUTRAL',\n      confidence: sentiment.confidence      || 0.5\n    }\n  }\n}];\n"
+      },
+      "id": "node-parse-sentiment",
+      "name": "Parse: Sentiment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 600]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.OPENROUTER_API_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" },
+            { "name": "HTTP-Referer",  "value": "https://github.com/thenrico/crypto-bot" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $env.TA_MODEL || 'anthropic/claude-opus-4-6' }}\",\n  \"temperature\": 0.05,\n  \"max_tokens\": 800,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an expert crypto technical analyst and trader. Analyze all provided indicators and generate precise trading signals with exact price levels. Be conservative and disciplined. Return ONLY valid JSON.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Technical Analysis for {{ $json.symbol }}:\\n\\nPrice: ${{ $json.currentPrice }} ({{ $json.priceChangePct > 0 ? '+' : '' }}{{ $json.priceChangePct }}% last candle)\\nRSI-14: {{ $json.rsi }} {{ $json.rsi > 70 ? '[OVERBOUGHT]' : $json.rsi < 30 ? '[OVERSOLD]' : '' }}\\nEMA-20: {{ $json.ema20 }} | EMA-50: {{ $json.ema50 }} | EMA-200: {{ $json.ema200 }}\\nEMA Alignment: {{ $json.ema_alignment }}\\nMACD: {{ $json.macd?.macd }} | Signal: {{ $json.macd?.signal }} | Hist: {{ $json.macd?.histogram }}\\nPattern: {{ $json.pattern }}\\nOrderbook pressure: {{ $json.obPressure }} (0=bearish, 1=bullish)\\nVolume ratio: {{ $json.volRatio }}x above avg\\nTrend: {{ $json.trend }}\\n\\nSentiment: {{ $json.sentiment.label }} (score: {{ $json.sentiment.score }}/100)\\nNews impact: {{ $json.newsAnalysis.impactScore }}/10\\nNews: {{ $json.newsAnalysis.summary }}\\n\\nGenerate a trading signal. Return JSON:\\n{ \\\"side\\\": \\\"BUY|SELL|HOLD\\\", \\\"confidence\\\": 0.0-1.0, \\\"entryPrice\\\": number, \\\"tpPrice\\\": number, \\\"slPrice\\\": number, \\\"tp2Price\\\": number or null, \\\"reasoning\\\": \\\"concise explanation max 2 sentences\\\", \\\"keyFactors\\\": [\\\"factor1\\\", \\\"factor2\\\"], \\\"riskRewardRatio\\\": number, \\\"timeframe\\\": \\\"SHORT|MEDIUM|LONG\\\" }\"\n    }\n  ]\n}",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "node-ta-ai",
+      "name": "Agent 3: TA & Trader AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2660, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Parse TA/Trader AI response ───────────────────────────────\nconst raw  = $input.first().json;\nconst prev = $('Parse: Sentiment').first().json;\n\nlet signal = {};\ntry {\n  const content = raw.choices?.[0]?.message?.content || '{}';\n  signal        = JSON.parse(content);\n} catch (e) {\n  signal        = { side: 'HOLD', confidence: 0, reasoning: 'Parse error' };\n}\n\n// Validate prices are reasonable (within 10% of current price)\nconst price = prev.currentPrice;\nconst isValidPrice = (p) => p && p > price * 0.85 && p < price * 1.15;\n\nconst entryPrice = isValidPrice(signal.entryPrice) ? signal.entryPrice : price;\nconst tpPrice    = signal.side === 'BUY'\n  ? (signal.tpPrice   > entryPrice ? signal.tpPrice   : entryPrice * 1.02)\n  : (signal.tpPrice   < entryPrice ? signal.tpPrice   : entryPrice * 0.98);\nconst slPrice    = signal.side === 'BUY'\n  ? (signal.slPrice   < entryPrice ? signal.slPrice   : entryPrice * 0.99)\n  : (signal.slPrice   > entryPrice ? signal.slPrice   : entryPrice * 1.01);\n\nreturn [{\n  json: {\n    ...prev,\n    taSignal: {\n      side:           signal.side           || 'HOLD',\n      confidence:     signal.confidence     || 0,\n      entryPrice:     Math.round(entryPrice * 100) / 100,\n      tpPrice:        Math.round(tpPrice    * 100) / 100,\n      slPrice:        Math.round(slPrice    * 100) / 100,\n      tp2Price:       signal.tp2Price       || null,\n      riskRewardRatio: signal.riskRewardRatio || 1,\n      reasoning:      signal.reasoning      || '',\n      keyFactors:     signal.keyFactors     || [],\n      timeframe:      signal.timeframe      || 'SHORT'\n    }\n  }\n}];\n"
+      },
+      "id": "node-parse-ta",
+      "name": "Parse: TA Signal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2880, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Sign Bybit wallet balance GET request ────────────────────\nconst crypto     = require('crypto');\nconst apiKey     = $env.BYBIT_API_KEY;\nconst apiSecret  = $env.BYBIT_API_SECRET;\nconst bybitBase  = $('Init Config').first().json.bybitBase;\nconst timestamp  = Date.now().toString();\nconst recvWindow = '5000';\nconst qs         = 'accountType=UNIFIED';\nconst paramStr   = timestamp + apiKey + recvWindow + qs;\nconst signature  = crypto.createHmac('sha256', apiSecret).update(paramStr).digest('hex');\nconst prev       = $input.first().json;\n\nreturn [{\n  json: {\n    ...prev,\n    balanceReq: { apiKey, timestamp, recvWindow, signature, qs, bybitBase }\n  }\n}];\n"
+      },
+      "id": "node-sign-balance",
+      "name": "Sign: Balance Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3100, 600]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.balanceReq.bybitBase }}/v5/account/wallet-balance?{{ $json.balanceReq.qs }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-BAPI-API-KEY",    "value": "={{ $json.balanceReq.apiKey }}" },
+            { "name": "X-BAPI-TIMESTAMP",  "value": "={{ $json.balanceReq.timestamp }}" },
+            { "name": "X-BAPI-SIGN",       "value": "={{ $json.balanceReq.signature }}" },
+            { "name": "X-BAPI-RECV-WINDOW","value": "={{ $json.balanceReq.recvWindow }}" }
+          ]
+        },
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "node-fetch-balance",
+      "name": "Bybit: Fetch Balance",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3320, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Kelly Criterion + Position Sizing ────────────────────────\nconst balanceRaw = $input.first().json;\nconst prev       = $('Parse: TA Signal').first().json;\nconst signal     = prev.taSignal;\n\n// Extract equity from Bybit UNIFIED account\nconst accountList = balanceRaw.result?.list || [];\nconst account     = accountList.find(a => a.accountType === 'UNIFIED') || accountList[0] || {};\nconst equity      = parseFloat(account.totalEquity || account.totalWalletBalance || '1000');\nconst availableBalance = parseFloat(account.totalAvailableBalance || equity * 0.8);\n\nconst maxRiskPct  = prev.maxRiskPct || 0.005;\nconst maxLeverage = parseFloat($env.MAX_LEVERAGE || '3');\nconst confidence  = signal.confidence;\nconst entryPrice  = signal.entryPrice;\nconst tpPrice     = signal.tpPrice;\nconst slPrice     = signal.slPrice;\n\nif (!entryPrice || !tpPrice || !slPrice || signal.side === 'HOLD') {\n  return [{\n    json: {\n      ...prev,\n      position: null,\n      skipReason: `HOLD signal or missing price levels`,\n      equity,\n      availableBalance\n    }\n  }];\n}\n\nconst reward = Math.abs(tpPrice - entryPrice);\nconst risk   = Math.abs(entryPrice - slPrice);\nif (risk === 0) {\n  return [{ json: { ...prev, position: null, skipReason: 'SL equals entry', equity } }];\n}\n\nconst rr = reward / risk;\n// Kelly: f* = (b*p - q) / b\nconst p  = Math.max(0.4, Math.min(0.9, confidence));\nconst q  = 1 - p;\nconst kellyFull = (rr * p - q) / rr;\nconst halfKelly = Math.max(0, kellyFull * 0.5); // half-Kelly for safety\n\n// Risk in USD: minimum of maxRisk% and half-Kelly%\nconst riskPct    = Math.min(maxRiskPct, halfKelly);\nconst riskUSD    = equity * riskPct;\n\n// Position size: riskUSD / (entry - SL) = qty in base asset\nconst qtyRaw     = riskUSD / risk;\nconst qty        = Math.floor(qtyRaw * 1000) / 1000; // round down to 3dp\n\n// Leverage: notional / margin\nconst notional   = qty * entryPrice;\nconst leverage   = Math.min(maxLeverage, Math.ceil(notional / (riskUSD * 10)));\n\nreturn [{\n  json: {\n    ...prev,\n    equity,\n    availableBalance,\n    position: {\n      qty,\n      leverage,\n      notional:      Math.round(notional * 100) / 100,\n      riskUSD:       Math.round(riskUSD  * 100) / 100,\n      riskPct:       Math.round(riskPct  * 10000) / 100,\n      kellyFull:     Math.round(kellyFull * 10000) / 10000,\n      halfKelly:     Math.round(halfKelly * 10000) / 10000,\n      riskReward:    Math.round(rr * 100) / 100\n    }\n  }\n}];\n"
+      },
+      "id": "node-kelly",
+      "name": "Compute: Kelly Position Size",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3540, 600]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.OPENROUTER_API_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" },
+            { "name": "HTTP-Referer",  "value": "https://github.com/thenrico/crypto-bot" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $env.RISK_MODEL || 'openai/gpt-4o-mini' }}\",\n  \"temperature\": 0.0,\n  \"max_tokens\": 500,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a strict risk management officer for a crypto trading fund. Your job is to protect capital above all else. Only approve trades with strong setups. Return ONLY valid JSON.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Risk Review for {{ $json.symbol }} {{ $json.taSignal.side }} signal:\\n\\nAccount equity: ${{ $json.equity }}\\nAvailable balance: ${{ $json.availableBalance }}\\nProposed position:\\n  - Qty: {{ $json.position?.qty }} {{ $json.symbol }}\\n  - Notional: ${{ $json.position?.notional }}\\n  - Leverage: {{ $json.position?.leverage }}x\\n  - Risk per trade: ${{ $json.position?.riskUSD }} ({{ $json.position?.riskPct }}% of equity)\\n  - Entry: ${{ $json.taSignal.entryPrice }}\\n  - TP: ${{ $json.taSignal.tpPrice }}\\n  - SL: ${{ $json.taSignal.slPrice }}\\n  - R:R = {{ $json.position?.riskReward }}\\n  - Signal confidence: {{ $json.taSignal.confidence }}\\n  - Min required confidence: {{ $json.minConfidence }}\\n  - Kelly fraction: {{ $json.position?.halfKelly }}\\n\\nTA signal reasoning: {{ $json.taSignal.reasoning }}\\nSentiment: {{ $json.sentiment.label }} ({{ $json.sentiment.score }})\\nMax allowed risk/trade: {{ $env.MAX_RISK_PER_TRADE_PCT * 100 }}%\\nMax leverage: {{ $env.MAX_LEVERAGE }}x\\n\\nApprove or reject this trade. Return JSON:\\n{ \\\"approved\\\": true|false, \\\"reason\\\": \\\"one sentence\\\", \\\"adjusted_qty\\\": number or null, \\\"adjusted_leverage\\\": number or null, \\\"risk_score\\\": 1-10, \\\"warnings\\\": [\\\"warning1\\\", ...] }\"\n    }\n  ]\n}",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "node-risk-ai",
+      "name": "Agent 4: Risk Management AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3760, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Parse Risk AI response ─────────────────────────────────────\nconst raw  = $input.first().json;\nconst prev = $('Compute: Kelly Position Size').first().json;\n\nlet risk = {};\ntry {\n  const content = raw.choices?.[0]?.message?.content || '{}';\n  risk          = JSON.parse(content);\n} catch (e) {\n  risk          = { approved: false, reason: 'Risk AI parse error', risk_score: 10, warnings: [] };\n}\n\n// Use adjusted values if provided, else keep original\nconst pos       = prev.position || {};\nconst finalQty  = risk.adjusted_qty       || pos.qty       || 0;\nconst finalLevg = risk.adjusted_leverage  || pos.leverage  || 1;\n\n// Additional hard guards\nconst minConf = prev.minConfidence || 0.6;\nconst approved = risk.approved === true\n  && prev.taSignal.side !== 'HOLD'\n  && prev.taSignal.confidence >= minConf\n  && prev.position !== null\n  && finalQty > 0;\n\nreturn [{\n  json: {\n    ...prev,\n    riskDecision: {\n      approved,\n      reason:          risk.reason   || '',\n      riskScore:       risk.risk_score || 5,\n      warnings:        risk.warnings  || [],\n      finalQty,\n      finalLeverage:   finalLevg,\n      simulationMode: prev.liveTrading !== true\n    }\n  }\n}];\n"
+      },
+      "id": "node-parse-risk",
+      "name": "Parse: Risk Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3980, 600]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-approved",
+              "leftValue":  "={{ $json.riskDecision.approved }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-if-approved",
+      "name": "IF: Trade Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4200, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Sign Bybit POST order request ─────────────────────────────\nconst crypto     = require('crypto');\nconst prev       = $input.first().json;\nconst signal     = prev.taSignal;\nconst risk       = prev.riskDecision;\nconst apiKey     = $env.BYBIT_API_KEY;\nconst apiSecret  = $env.BYBIT_API_SECRET;\nconst bybitBase  = $('Init Config').first().json.bybitBase;\nconst timestamp  = Date.now().toString();\nconst recvWindow = '5000';\n\n// If simulation mode, skip real order\nif (risk.simulationMode) {\n  return [{\n    json: {\n      ...prev,\n      orderPayload: null,\n      simulatedOrder: {\n        symbol:      prev.symbol,\n        side:        signal.side,\n        orderType:   'Market',\n        qty:         risk.finalQty.toString(),\n        leverage:    risk.finalLeverage,\n        entryPrice:  signal.entryPrice,\n        tpPrice:     signal.tpPrice,\n        slPrice:     signal.slPrice,\n        simulated:   true,\n        timestamp:   new Date().toISOString()\n      }\n    }\n  }];\n}\n\n// Set leverage (category: linear for USDT perpetual)\nconst orderBody = {\n  category:    'linear',\n  symbol:      prev.symbol,\n  side:        signal.side === 'BUY' ? 'Buy' : 'Sell',\n  orderType:   'Market',\n  qty:         risk.finalQty.toString(),\n  timeInForce: 'GoodTillCancel',\n  positionIdx: 0\n};\n\nconst bodyStr   = JSON.stringify(orderBody);\nconst paramStr  = timestamp + apiKey + recvWindow + bodyStr;\nconst signature = crypto.createHmac('sha256', apiSecret).update(paramStr).digest('hex');\n\nreturn [{\n  json: {\n    ...prev,\n    orderPayload:  orderBody,\n    orderSign: { apiKey, timestamp, recvWindow, signature, bybitBase }\n  }\n}];\n"
+      },
+      "id": "node-sign-order",
+      "name": "Sign: Place Order",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4420, 480]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.orderSign?.bybitBase || 'https://api-demo.bybit.com' }}/v5/order/create",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-BAPI-API-KEY",    "value": "={{ $json.orderSign?.apiKey || '' }}" },
+            { "name": "X-BAPI-TIMESTAMP",  "value": "={{ $json.orderSign?.timestamp || '' }}" },
+            { "name": "X-BAPI-SIGN",       "value": "={{ $json.orderSign?.signature || '' }}" },
+            { "name": "X-BAPI-RECV-WINDOW","value": "={{ $json.orderSign?.recvWindow || '5000' }}" },
+            { "name": "Content-Type",       "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.orderPayload || $json.simulatedOrder) }}",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "node-place-order",
+      "name": "Bybit: Place Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4640, 480]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Sign & build TP/SL order ──────────────────────────────────\nconst crypto       = require('crypto');\nconst raw          = $input.first().json;\nconst prev         = $('Sign: Place Order').first().json;\nconst signal       = prev.taSignal;\nconst risk         = prev.riskDecision;\n\n// If simulated, skip\nif (risk.simulationMode) {\n  return [{ json: { ...prev, orderResult: raw, tpSlSkipped: true } }];\n}\n\nconst orderId = raw.result?.orderId;\nif (!orderId) {\n  return [{ json: { ...prev, orderResult: raw, tpSlSkipped: true, error: 'No orderId returned' } }];\n}\n\nconst apiKey     = $env.BYBIT_API_KEY;\nconst apiSecret  = $env.BYBIT_API_SECRET;\nconst bybitBase  = $('Init Config').first().json.bybitBase;\nconst timestamp  = Date.now().toString();\nconst recvWindow = '5000';\n\nconst tpSlBody = {\n  category:   'linear',\n  symbol:     prev.symbol,\n  orderId,\n  takeProfit: signal.tpPrice.toString(),\n  stopLoss:   signal.slPrice.toString(),\n  tpTriggerBy: 'MarkPrice',\n  slTriggerBy: 'MarkPrice'\n};\n\nconst bodyStr   = JSON.stringify(tpSlBody);\nconst paramStr  = timestamp + apiKey + recvWindow + bodyStr;\nconst signature = crypto.createHmac('sha256', apiSecret).update(paramStr).digest('hex');\n\nreturn [{\n  json: {\n    ...prev,\n    orderResult:  raw,\n    orderId,\n    tpSlPayload:  tpSlBody,\n    tpSlSign: { apiKey, timestamp, recvWindow, signature, bybitBase }\n  }\n}];\n"
+      },
+      "id": "node-sign-tpsl",
+      "name": "Sign: Set TP/SL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4860, 480]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.tpSlSign?.bybitBase || 'https://api-demo.bybit.com' }}/v5/order/amend",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-BAPI-API-KEY",    "value": "={{ $json.tpSlSign?.apiKey || '' }}" },
+            { "name": "X-BAPI-TIMESTAMP",  "value": "={{ $json.tpSlSign?.timestamp || '' }}" },
+            { "name": "X-BAPI-SIGN",       "value": "={{ $json.tpSlSign?.signature || '' }}" },
+            { "name": "X-BAPI-RECV-WINDOW","value": "={{ $json.tpSlSign?.recvWindow || '5000' }}" },
+            { "name": "Content-Type",       "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.tpSlPayload || {}) }}",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      },
+      "id": "node-set-tpsl",
+      "name": "Bybit: Set TP/SL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [5080, 480]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Build rejection log entry ──────────────────────────────────\nconst prev = $input.first().json;\nreturn [{\n  json: {\n    ...prev,\n    rejectionLog: {\n      symbol:     prev.symbol,\n      side:       prev.taSignal?.side || 'HOLD',\n      reason:     prev.riskDecision?.reason || prev.skipReason || 'Unknown',\n      confidence: prev.taSignal?.confidence || 0,\n      riskScore:  prev.riskDecision?.riskScore || 0,\n      warnings:   prev.riskDecision?.warnings || [],\n      timestamp:  new Date().toISOString()\n    }\n  }\n}];\n"
+      },
+      "id": "node-log-rejection",
+      "name": "Build: Rejection Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4420, 720]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "multiplex",
+        "options": {}
+      },
+      "id": "node-merge-results",
+      "name": "Merge: Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [5300, 600]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": { "value": "public" },
+        "table": { "value": "signals" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "symbol":          "={{ $json.symbol }}",
+            "side":            "={{ $json.taSignal?.side || 'HOLD' }}",
+            "entry_price":     "={{ $json.taSignal?.entryPrice }}",
+            "tp_price":        "={{ $json.taSignal?.tpPrice }}",
+            "sl_price":        "={{ $json.taSignal?.slPrice }}",
+            "confidence":      "={{ $json.taSignal?.confidence }}",
+            "rsi":             "={{ $json.rsi }}",
+            "ema20":           "={{ $json.ema20 }}",
+            "ema50":           "={{ $json.ema50 }}",
+            "ema200":          "={{ $json.ema200 }}",
+            "macd":            "={{ $json.macd?.histogram }}",
+            "news_impact":     "={{ $json.newsAnalysis?.impactScore }}",
+            "sentiment_score": "={{ $json.sentiment?.score }}",
+            "risk_approved":   "={{ $json.riskDecision?.approved || false }}",
+            "rejection_reason":"={{ $json.riskDecision?.reason || $json.skipReason || '' }}",
+            "kelly_fraction":  "={{ $json.position?.halfKelly }}",
+            "position_qty":    "={{ $json.riskDecision?.finalQty }}",
+            "leverage":        "={{ $json.riskDecision?.finalLeverage }}",
+            "risk_usd":        "={{ $json.position?.riskUSD }}",
+            "equity_snapshot": "={{ $json.equity }}"
+          }
+        },
+        "options": { "queryBatching": "transaction" }
+      },
+      "id": "node-db-signal",
+      "name": "DB: Log Signal",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [5520, 600],
+      "credentials": {
+        "postgres": { "id": "POSTGRES_CREDENTIAL_ID", "name": "Postgres account" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Format Telegram notification ─────────────────────────────\nconst d   = $input.first().json;\nconst sig = d.taSignal || {};\nconst rm  = d.riskDecision || {};\nconst pos = d.position || {};\nconst icon = rm.approved ? (sig.side === 'BUY' ? '🟢' : '🔴') : '⚪';\nconst status = rm.approved\n  ? (rm.simulationMode ? '📊 SIMULATED' : '✅ LIVE ORDER')\n  : '🚫 REJECTED';\n\nconst lines = [\n  `${icon} *${d.symbol} | ${sig.side || 'HOLD'} | ${status}*`,\n  ``,\n  `💰 Price: \\$${d.currentPrice}`,\n  sig.side !== 'HOLD' ? [\n    `📍 Entry: \\$${sig.entryPrice}`,\n    `🎯 TP:    \\$${sig.tpPrice}`,\n    `🛑 SL:    \\$${sig.slPrice}`,\n    `⚖️  R:R = ${pos.riskReward}x | Conf: ${Math.round((sig.confidence||0)*100)}%`\n  ].join('\\n') : '',\n  ``,\n  `📊 *Indicators*`,\n  `RSI: ${d.rsi} | EMA align: ${d.ema_alignment}`,\n  `MACD hist: ${d.macd?.histogram} | Pattern: ${d.pattern}`,\n  ``,\n  `📰 *News* (impact: ${d.newsAnalysis?.impactScore}/10)`,\n  d.newsAnalysis?.summary || 'No summary',\n  ``,\n  `💬 *Sentiment*: ${d.sentiment?.label} (${d.sentiment?.score})`,\n  ``,\n  rm.approved ? [\n    `🏦 *Position*`,\n    `Qty: ${rm.finalQty} | Lev: ${rm.finalLeverage}x | Risk: \\$${pos.riskUSD}`,\n    `Kelly: ${pos.halfKelly}`\n  ].join('\\n') : `Reason: ${rm.reason || ''}`,\n  ``,\n  `⏱ ${new Date().toISOString().slice(0,19).replace('T',' ')} UTC`\n].filter(l => l !== '').join('\\n');\n\nreturn [{ json: { message: lines, chatId: $env.TG_CHAT_IDS } }];\n"
+      },
+      "id": "node-format-tg",
+      "name": "Format: Telegram Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5740, 600]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text":   "={{ $json.message }}",
+        "additionalFields": { "parse_mode": "Markdown" }
+      },
+      "id": "node-telegram",
+      "name": "Telegram: Send Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [5960, 600],
+      "credentials": {
+        "telegramApi": { "id": "TELEGRAM_CREDENTIAL_ID", "name": "Telegram account" }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule: Every 5 Min": {
+      "main": [[{ "node": "Init Config", "type": "main", "index": 0 }]]
+    },
+    "Init Config": {
+      "main": [
+        [
+          { "node": "Sign: Kline Request",      "type": "main", "index": 0 },
+          { "node": "Sign: Orderbook Request",  "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Sign: Kline Request": {
+      "main": [[{ "node": "Bybit: Fetch Klines", "type": "main", "index": 0 }]]
+    },
+    "Sign: Orderbook Request": {
+      "main": [[{ "node": "Bybit: Fetch OrderBook", "type": "main", "index": 0 }]]
+    },
+    "Bybit: Fetch Klines": {
+      "main": [[{ "node": "Merge: Market Data", "type": "main", "index": 0 }]]
+    },
+    "Bybit: Fetch OrderBook": {
+      "main": [[{ "node": "Merge: Market Data", "type": "main", "index": 1 }]]
+    },
+    "Merge: Market Data": {
+      "main": [[{ "node": "Compute: TA Indicators", "type": "main", "index": 0 }]]
+    },
+    "Compute: TA Indicators": {
+      "main": [[{ "node": "CryptoPanic: Fetch News", "type": "main", "index": 0 }]]
+    },
+    "CryptoPanic: Fetch News": {
+      "main": [[{ "node": "Parse: News", "type": "main", "index": 0 }]]
+    },
+    "Parse: News": {
+      "main": [[{ "node": "Agent 1: News AI", "type": "main", "index": 0 }]]
+    },
+    "Agent 1: News AI": {
+      "main": [[{ "node": "Parse: News AI Response", "type": "main", "index": 0 }]]
+    },
+    "Parse: News AI Response": {
+      "main": [[{ "node": "Agent 2: Sentiment AI", "type": "main", "index": 0 }]]
+    },
+    "Agent 2: Sentiment AI": {
+      "main": [[{ "node": "Parse: Sentiment", "type": "main", "index": 0 }]]
+    },
+    "Parse: Sentiment": {
+      "main": [[{ "node": "Agent 3: TA & Trader AI", "type": "main", "index": 0 }]]
+    },
+    "Agent 3: TA & Trader AI": {
+      "main": [[{ "node": "Parse: TA Signal", "type": "main", "index": 0 }]]
+    },
+    "Parse: TA Signal": {
+      "main": [[{ "node": "Sign: Balance Request", "type": "main", "index": 0 }]]
+    },
+    "Sign: Balance Request": {
+      "main": [[{ "node": "Bybit: Fetch Balance", "type": "main", "index": 0 }]]
+    },
+    "Bybit: Fetch Balance": {
+      "main": [[{ "node": "Compute: Kelly Position Size", "type": "main", "index": 0 }]]
+    },
+    "Compute: Kelly Position Size": {
+      "main": [[{ "node": "Agent 4: Risk Management AI", "type": "main", "index": 0 }]]
+    },
+    "Agent 4: Risk Management AI": {
+      "main": [[{ "node": "Parse: Risk Decision", "type": "main", "index": 0 }]]
+    },
+    "Parse: Risk Decision": {
+      "main": [[{ "node": "IF: Trade Approved?", "type": "main", "index": 0 }]]
+    },
+    "IF: Trade Approved?": {
+      "main": [
+        [{ "node": "Sign: Place Order",    "type": "main", "index": 0 }],
+        [{ "node": "Build: Rejection Log", "type": "main", "index": 0 }]
+      ]
+    },
+    "Sign: Place Order": {
+      "main": [[{ "node": "Bybit: Place Order", "type": "main", "index": 0 }]]
+    },
+    "Bybit: Place Order": {
+      "main": [[{ "node": "Sign: Set TP/SL", "type": "main", "index": 0 }]]
+    },
+    "Sign: Set TP/SL": {
+      "main": [[{ "node": "Bybit: Set TP/SL", "type": "main", "index": 0 }]]
+    },
+    "Bybit: Set TP/SL": {
+      "main": [[{ "node": "Merge: Results", "type": "main", "index": 0 }]]
+    },
+    "Build: Rejection Log": {
+      "main": [[{ "node": "Merge: Results", "type": "main", "index": 1 }]]
+    },
+    "Merge: Results": {
+      "main": [[{ "node": "DB: Log Signal", "type": "main", "index": 0 }]]
+    },
+    "DB: Log Signal": {
+      "main": [[{ "node": "Format: Telegram Message", "type": "main", "index": 0 }]]
+    },
+    "Format: Telegram Message": {
+      "main": [[{ "node": "Telegram: Send Alert", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "tags": ["crypto", "trading", "bybit", "demo"],
+  "id": "crypto-trading-bot-v1",
+  "versionId": "1.0.0"
+}
